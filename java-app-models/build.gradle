@@ -1,0 +1,140 @@
+plugins {
+    id "com.jfrog.artifactory" version "4.13.0"
+    id 'org.springframework.boot' version '2.0.5.RELEASE'
+    id 'io.spring.dependency-management' version '1.0.8.RELEASE'
+    id 'java'
+}
+
+// Pull in version information from version.properties
+Properties props = new Properties()
+props.load(new FileInputStream("$project.rootDir/gradle/version.properties"))
+props.each { prop -> if ( !project.hasProperty(prop.key) ) project.ext.set(prop.key, prop.value) }
+
+// The pipeline can override these values by e.g. `gradle build -Prevision_version=3`
+version = new Version(major: project.property('major_version'),
+                      minor: project.property('minor_version'),
+                      revision: project.property('revision_version'))
+
+// The release pipeline can override this, e.g. `gradle build snapshot_suffix=`
+def actual_suffix = snapshot_suffix ? "-${snapshot_suffix}" : ""
+version = "${version}${actual_suffix}"
+group = "${project.artifact_groupId}"
+
+apply plugin: 'application'
+apply plugin: 'java'
+apply plugin: 'io.spring.dependency-management'
+apply plugin: 'maven'
+apply plugin: 'maven-publish'
+
+mainClassName='com.njax.destructocats.java.app.models.Main'
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa:2.0.5.RELEASE'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-test'
+
+    runtimeOnly 'mysql:mysql-connector-java'
+
+    compile 'org.slf4j:slf4j-api:1.7.5'
+    compile 'com.njax.psas:securitymetrics-client:0.0.9-SNAPSHOT'
+    compile group: 'javax.persistence', name: 'javax.persistence-api', version: '2.2'
+
+    // testCompile group: 'org.springframework', name: 'spring-test', version: '4.0.5.RELEASE'
+
+    testCompile "junit:junit:4.12"
+    testCompile 'org.mockito:mockito-core:2.15.0'
+    testCompile group: 'org.mockito', name: 'mockito-all', version: '1.9.5'
+
+}
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+
+    maven {
+        url "${artifactory_contextUrl}/repo"
+        credentials {
+            username = "${artifactory_user}"
+            password = "${artifactory_password}"
+        }
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            version project.version
+            groupId project.group
+        }
+    }
+}
+
+// Workaround to allow springboot apps to publish to artifactory
+jar {
+    enabled = true
+    manifest {
+        attributes 'Main-Class': mainClassName,
+                   'Implementation-Version': version
+    }
+}
+bootJar {
+  classifier = 'application'
+  manifest {
+      attributes 'Main-Class': mainClassName,
+                 'Implementation-Title': "${group}:${rootProject.name}",
+                 'Implementation-Version': version
+  }
+}
+
+
+artifactory {
+    contextUrl = "${artifactory_contextUrl}"
+
+    resolve {
+        repository {
+            repoKey = 'repo'
+            maven = true
+        }
+    }
+
+    publish {
+        repository {
+            repoKey = snapshot_suffix.toUpperCase() == "SNAPSHOT" ? snapshot_repokey:  release_repokey
+            username = "${artifactory_user}"   // The publisher user name
+            password = "${artifactory_password}" // The publisher password
+            maven = true
+        }
+        defaults {
+            publications('mavenJava')
+        }
+    }
+}
+
+
+// Enable Reproducible Spring Boot Builds //
+tasks.withType(AbstractArchiveTask) {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+springBoot {
+    mainClassName = mainClassName
+    buildInfo {
+        properties {
+             time = null
+        }
+
+        doLast {
+            File f = new File(destinationDir, 'build-info.properties')
+            f.text = f.filterLine { !it.startsWith('#') }
+        }
+    }
+}
+
+class Version {
+    String major, minor, revision
+
+    String toString() {
+        "$major.$minor.$revision"
+    }
+}
